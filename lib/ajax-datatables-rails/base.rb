@@ -109,46 +109,63 @@ module AjaxDatatablesRails
     def build_conditions_for(query)
       search_for = query.split(' ')
       criteria = search_for.inject([]) do |criteria, atom|
-        criteria << searchable_columns.map { |col| search_condition(col, atom) }.reduce(:or)
+        criteria << searchable_columns.map { |col| search_condition(col, atom, false) }.reduce(:or)
       end.reduce(:and)
       criteria
     end
 
-    def search_condition(column, value)
+    def search_condition(column, value, regex)
       if column[0] == column.downcase[0]
         ::AjaxDatatablesRails::Base.deprecated '[DEPRECATED] Using table_name.column_name notation is deprecated. Please refer to: https://github.com/antillas21/ajax-datatables-rails#searchable-and-sortable-columns-syntax'
-        return deprecated_search_condition(column, value)
+        return deprecated_search_condition(column, value, regex)
       else
-        return new_search_condition(column, value)
+        return new_search_condition(column, value, regex)
       end
     end
 
-    def new_search_condition(column, value)
+    def new_search_condition(column, value, regex)
       model, column = column.split('.')
       model = model.constantize
       casted_column = ::Arel::Nodes::NamedFunction.new('CAST', [model.arel_table[column.to_sym].as(typecast)])
-      casted_column.matches("%#{sanitize_sql_like(value)}%")
+
+      # We want to support regular expression (as they are used in datatables)
+      if regex
+        # arel version < 7.0 does not support matches_regexp
+        # therefore we use LIKE queries and pass the pattern directly (i.e. this allows exact matches)
+        casted_column.matches("#{value}")
+      else
+        casted_column.matches("%#{sanitize_sql_like(value)}%")
+      end
     end
 
-    def deprecated_search_condition(column, value)
+    def deprecated_search_condition(column, value, regex)
       model, column = column.split('.')
       model = model.singularize.titleize.gsub( / /, '' ).constantize
 
       casted_column = ::Arel::Nodes::NamedFunction.new('CAST', [model.arel_table[column.to_sym].as(typecast)])
-      casted_column.matches("%#{sanitize_sql_like(value)}%")
+
+      # We want to support regular expression (as they are used in datatables)
+      if regex
+        # arel version < 7.0 does not support matches_regexp
+        # therefore we use LIKE queries and pass the pattern directly (i.e. this allows exact matches)
+        casted_column.matches("#{value}")
+      else
+        casted_column.matches("%#{sanitize_sql_like(value)}%")
+      end
     end
 
     def aggregate_query
       conditions = searchable_columns.each_with_index.map do |column, index|
         value = params[:columns]["#{index}"][:search][:value] if params[:columns]
-        search_condition(column, value) unless value.blank?
+        regex = (params[:columns]["#{index}"][:search][:regex] == 'true') if params[:columns]
+        search_condition(column, value, regex) unless value.blank?
       end
       conditions.compact.reduce(:and)
     end
 
     def typecast
       case config.db_adapter
-      when :oracle then 'VARCHAR2(4000)'  
+      when :oracle then 'VARCHAR2(4000)'
       when :pg then 'VARCHAR'
       when :mysql2 then 'CHAR'
       when :sqlite3 then 'TEXT'
