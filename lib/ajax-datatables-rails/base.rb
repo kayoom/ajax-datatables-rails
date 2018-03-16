@@ -1,215 +1,158 @@
+# frozen_string_literal: true
+
 module AjaxDatatablesRails
   class Base
     extend Forwardable
-    include ActiveRecord::Sanitization::ClassMethods
-    class MethodNotImplementedError < StandardError; end
 
-    attr_reader :view, :options, :sortable_columns, :searchable_columns
-    def_delegator :@view, :params, :params
+    attr_reader :view, :options
+    def_delegator :@view, :params
+
+    GLOBAL_SEARCH_DELIMITER = ' '
 
     def initialize(view, options = {})
-      @view = view
+      @view    = view
       @options = options
-      load_paginator
+      load_orm_extension
     end
 
-    def config
-      @config ||= AjaxDatatablesRails.config
+    def datatable
+      @datatable ||= Datatable::Datatable.new(self)
     end
 
-    def sortable_columns
-      @sortable_columns ||= []
-    end
-
-    def searchable_columns
-      @searchable_columns ||= []
-    end
-
-    def data
-      fail(
-        MethodNotImplementedError,
-        'Please implement this method in your class.'
-      )
+    def view_columns
+      raise(NotImplementedError, view_columns_error_text)
     end
 
     def get_raw_records
-      fail(
-        MethodNotImplementedError,
-        'Please implement this method in your class.'
-      )
+      raise(NotImplementedError, raw_records_error_text)
     end
 
-    def as_json(options = {})
+    def data
+      raise(NotImplementedError, data_error_text)
+    end
+
+    def additional_data
+      {}
+    end
+
+    def as_json(*)
       {
-        :draw => params[:draw].to_i,
-        :recordsTotal =>  get_raw_records.count(:all),
-        :recordsFiltered => filter_records(get_raw_records).count(:all),
-        :data => data
-      }
+        recordsTotal: records_total_count,
+        recordsFiltered: records_filtered_count,
+        data: sanitize(data)
+      }.merge(get_additional_data)
     end
 
-    def self.deprecated(message, caller = Kernel.caller[1])
-      warning = caller + ": " + message
+    def records
+      @records ||= retrieve_records
+    end
 
-      if(respond_to?(:logger) && logger.present?)
-        logger.warn(warning)
-      else
-        warn(warning)
+    # helper methods
+    def connected_columns
+      @connected_columns ||= begin
+        view_columns.keys.map do |field_name|
+          datatable.column_by(:data, field_name.to_s)
+        end.compact
+      end
+    end
+
+    def searchable_columns
+      @searchable_columns ||= begin
+        connected_columns.select(&:searchable?)
+      end
+    end
+
+    def search_columns
+      @search_columns ||= begin
+        searchable_columns.select(&:searched?)
       end
     end
 
     private
 
-    def records
-      @records ||= fetch_records
-    end
+    # This method is necessary for smooth transition from
+    # `additinonal_datas` method to `additional_data`
+    # without breaking change.
+    def get_additional_data
+      if respond_to?(:additional_datas)
+        puts <<-WARNING
+          `additional_datas` has been deprecated and
+          will be removed in next major version update!
+          Please use `additional_data` instead.
+        WARNING
 
-    def fetch_records
-      records = get_raw_records
-      records = sort_records(records) if params[:order].present?
-      records = filter_records(records) if params[:search].present?
-      records = paginate_records(records) unless params[:length].present? && params[:length] == '-1'
-      records
-    end
-
-    def sort_records(records)
-      sort_by = []
-      params[:order].each_value do |item|
-        sort_by << "#{sort_column(item)} #{sort_direction(item)}"
-      end
-      records.order(sort_by.join(", "))
-    end
-
-    def paginate_records(records)
-      fail(
-        MethodNotImplementedError,
-        'Please mixin a pagination extension.'
-      )
-    end
-
-    def filter_records(records)
-      records = simple_search(records)
-      records = composite_search(records)
-      records
-    end
-
-    def simple_search(records)
-      return records unless (params[:search].present? && params[:search][:value].present?)
-      conditions = build_conditions_for(params[:search][:value])
-      records = records.where(conditions) if conditions
-      records
-    end
-
-    def composite_search(records)
-      conditions = aggregate_query
-      records = records.where(conditions) if conditions
-      records
-    end
-
-    def build_conditions_for(query)
-      search_for = query.split(' ')
-      criteria = search_for.inject([]) do |criteria, atom|
-        criteria << searchable_columns.map { |col| search_condition(col, atom) }.reduce(:or)
-      end.reduce(:and)
-      criteria
-    end
-
-    def search_condition(column, value)
-      if column[0] == column.downcase[0]
-        ::AjaxDatatablesRails::Base.deprecated '[DEPRECATED] Using table_name.column_name notation is deprecated. Please refer to: https://github.com/antillas21/ajax-datatables-rails#searchable-and-sortable-columns-syntax'
-        return deprecated_search_condition(column, value)
+        additional_datas
       else
-        return new_search_condition(column, value)
+        additional_data
       end
     end
 
-    def new_search_condition(column, value)
-      model, column = column.split('.')
-      model = model.constantize
-      casted_column = ::Arel::Nodes::NamedFunction.new('CAST', [model.arel_table[column.to_sym].as(typecast)])
-      casted_column.matches("%#{sanitize_sql_like(value)}%")
-    end
-
-    def deprecated_search_condition(column, value)
-      model, column = column.split('.')
-      model = model.singularize.titleize.gsub( / /, '' ).constantize
-
-      casted_column = ::Arel::Nodes::NamedFunction.new('CAST', [model.arel_table[column.to_sym].as(typecast)])
-      casted_column.matches("%#{sanitize_sql_like(value)}%")
-    end
-
-    def aggregate_query
-      conditions = searchable_columns.each_with_index.map do |column, index|
-        value = params[:columns]["#{index}"][:search][:value] if params[:columns]
-        search_condition(column, value) unless value.blank?
-      end
-      conditions.compact.reduce(:and)
-    end
-
-    def typecast
-      case config.db_adapter
-      when :oracle then 'VARCHAR2(4000)'  
-      when :pg then 'VARCHAR'
-      when :mysql2 then 'CHAR'
-      when :sqlite3 then 'TEXT'
+    def sanitize(data)
+      data.map do |record|
+        if record.is_a?(Array)
+          record.map { |td| ERB::Util.html_escape(td) }
+        else
+          record.update(record) { |_, v| ERB::Util.html_escape(v) }
+        end
       end
     end
 
-    def offset
-      (page - 1) * per_page
+    def retrieve_records
+      records = fetch_records
+      records = filter_records(records)
+      records = sort_records(records)     if datatable.orderable?
+      records = paginate_records(records) if datatable.paginate?
+      records
     end
 
-    def page
-      (params[:start].to_i / per_page) + 1
+    def records_total_count
+      fetch_records.count(:all)
     end
 
-    def per_page
-      params.fetch(:length, 10).to_i
+    def records_filtered_count
+      filter_records(fetch_records).count(:all)
     end
 
-    def sort_column(item)
-      new_sort_column(item)
-    rescue
-      ::AjaxDatatablesRails::Base.deprecated '[DEPRECATED] Using table_name.column_name notation is deprecated. Please refer to: https://github.com/antillas21/ajax-datatables-rails#searchable-and-sortable-columns-syntax'
-      deprecated_sort_column(item)
-    end
-
-    def deprecated_sort_column(item)
-      sortable_columns[sortable_displayed_columns.index(item[:column])]
-    end
-
-    def new_sort_column(item)
-      model, column = sortable_columns[sortable_displayed_columns.index(item[:column])].split('.')
-      col = [model.constantize.table_name, column].join('.')
-    end
-
-    def sort_direction(item)
-      options = %w(desc asc)
-      options.include?(item[:dir]) ? item[:dir].upcase : 'ASC'
-    end
-
-    def sortable_displayed_columns
-      @sortable_displayed_columns ||= generate_sortable_displayed_columns
-    end
-
-    def generate_sortable_displayed_columns
-      @sortable_displayed_columns = []
-      params[:columns].each_value do |column|
-        @sortable_displayed_columns << column[:data] if column[:orderable] == 'true'
+    # Private helper methods
+    def load_orm_extension
+      case AjaxDatatablesRails.config.orm
+      when :active_record
+        extend ORM::ActiveRecord
+      when :mongoid
+        nil
       end
-      @sortable_displayed_columns
     end
 
-    def load_paginator
-      case config.paginator
-      when :kaminari
-        extend Extensions::Kaminari
-      when :will_paginate
-        extend Extensions::WillPaginate
-      else
-        extend Extensions::SimplePaginator
-      end
-      self
+    def global_search_delimiter
+      GLOBAL_SEARCH_DELIMITER
     end
+
+    def raw_records_error_text
+      <<-ERROR
+
+        You should implement this method in your class and specify
+        how records are going to be retrieved from the database.
+      ERROR
+    end
+
+    def data_error_text
+      <<-ERROR
+
+        You should implement this method in your class and return an array
+        of arrays, or an array of hashes, as defined in the jQuery.dataTables
+        plugin documentation.
+      ERROR
+    end
+
+    def view_columns_error_text
+      <<-ERROR
+
+        You should implement this method in your class and return an array
+        of database columns based on the columns displayed in the HTML view.
+        These columns should be represented in the ModelName.column_name,
+        or aliased_join_table.column_name notation.
+      ERROR
+    end
+
   end
 end

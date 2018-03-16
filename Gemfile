@@ -1,4 +1,10 @@
+# frozen_string_literal: true
+
 source 'https://rubygems.org'
 
-# Specify your gem's dependencies in ajax-datatables-rails.gemspec
 gemspec
+
+# CodeClimate Test Coverage
+group :test do
+  gem 'codeclimate-test-reporter', '~> 1.0.0'
+end

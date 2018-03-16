@@ -1,0 +1,42 @@
+AllCops:
+  TargetRubyVersion: 2.5
+  Exclude:
+    - spec/**/*.rb
+    - lib/ajax-datatables-rails.rb
+    - lib/generators/rails/templates/*.rb
+
+Documentation:
+  Enabled: false
+
+Gemspec/OrderedDependencies:
+  Enabled: false
+
+Layout/EmptyLines:
+  Enabled: false
+
+Layout/EmptyLinesAroundClassBody:
+  Enabled: false
+
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: false
+
+Layout/EmptyLinesAroundModuleBody:
+  Enabled: false
+
+Layout/EmptyLineBetweenDefs:
+  Enabled: false
+
+Metrics/LineLength:
+  Enabled: false
+
+Metrics/BlockLength:
+  Max: 30
+
+Metrics/ClassLength:
+  Max: 130
+
+Naming/AccessorMethodName:
+  Enabled: false
+
+Style/NumericPredicate:
+  Enabled: false

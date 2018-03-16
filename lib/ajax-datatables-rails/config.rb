@@ -1,12 +1,14 @@
+# frozen_string_literal: true
+
 require 'active_support/configurable'
 
 module AjaxDatatablesRails
 
   # configure AjaxDatatablesRails global settings
   #   AjaxDatatablesRails.configure do |config|
-  #     config.db_adapter = :pg
+  #     config.db_adapter = :postgresql
   #   end
-  def self.configure &block
+  def self.configure
     yield @config ||= AjaxDatatablesRails::Configuration.new
   end
 
@@ -15,11 +17,14 @@ module AjaxDatatablesRails
     @config ||= AjaxDatatablesRails::Configuration.new
   end
 
+  def self.old_rails?
+    Rails::VERSION::MAJOR == 4 && (Rails::VERSION::MINOR == 1 || Rails::VERSION::MINOR == 0)
+  end
+
   class Configuration
     include ActiveSupport::Configurable
 
-    # default db_adapter is pg (postgresql)
-    config_accessor(:db_adapter) { :pg }
-    config_accessor(:paginator) { :simple_paginator }
+    config_accessor(:orm) { :active_record }
+    config_accessor(:db_adapter) { :postgresql }
   end
 end
